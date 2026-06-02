@@ -3,5 +3,8 @@ __pycache__
 /datasets
 .idea
 .venv
+.poetry-cache
+.poetry-config
+.matplotlib-cache
 
 .DS_Store
