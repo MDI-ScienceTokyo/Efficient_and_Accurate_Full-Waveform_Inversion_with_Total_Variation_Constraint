@@ -1,8 +1,33 @@
+import re
+from pathlib import Path
 from typing import Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
+
+
+_figure_index = 0
+
+
+def _show_or_save_figure(title: str):
+    global _figure_index
+
+    backend = plt.get_backend().lower()
+    is_interactive = not any(name in backend for name in ("agg", "pdf", "ps", "svg", "cairo"))
+
+    if is_interactive:
+        plt.show()
+        return
+
+    _figure_index += 1
+    output_dir = Path("outputs/figures")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    safe_title = re.sub(r"[^A-Za-z0-9_.-]+", "_", title).strip("_").lower() or "figure"
+    output_path = output_dir.joinpath(f"{_figure_index:03d}_{safe_title}.png")
+    plt.savefig(output_path, bbox_inches="tight", dpi=150)
+    plt.close()
+    print(f"Saved figure: {output_path}")
 
 
 def show_velocity_model(data: NDArray, vmin: Union[float, None] = None, vmax: Union[float, None] = None, title: str = "velocity model", cmap: str = "jet"):
@@ -16,7 +41,7 @@ def show_velocity_model(data: NDArray, vmin: Union[float, None] = None, vmax: Un
     plt.title(title)
     plt.xlabel("X [km]")
     plt.ylabel("Depth [km]")
-    plt.show()
+    _show_or_save_figure(title)
 
 
 def show_minimum_velocity_model(data: np.ndarray, vmin: Union[float, None] = None, vmax: Union[float, None] = None, cmap: str = "jet"):
@@ -56,4 +81,4 @@ def show_minimum_velocity_model(data: np.ndarray, vmin: Union[float, None] = Non
     plt.axis("tight")
     fig.tight_layout()
     plt.subplots_adjust(left=0.1, right=0.995, bottom=0.26, top=0.96)
-    plt.show()
+    _show_or_save_figure("minimum velocity model")

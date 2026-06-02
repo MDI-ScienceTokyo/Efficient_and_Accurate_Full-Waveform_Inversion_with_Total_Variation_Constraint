@@ -1,6 +1,7 @@
 __pycache__
 /tmp
 /datasets
+/outputs
 .idea
 .venv
 .poetry-cache
