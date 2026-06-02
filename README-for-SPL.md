@@ -6,7 +6,7 @@
 
 `src/box-TV-constrained-FWI.py` は、Saltモデルに対してFWIを実行し、TV制約なし/ありの結果を比較するための実験スクリプトです。
 
-現在のデフォルト設定では、次の4条件を順番に実行します。
+現在のデフォルト設定では、ノイズなし/ありの2条件それぞれについて、次の4条件を順番に実行します。
 
 | alpha | algorithm | 内容 |
 | ---: | --- | --- |
@@ -16,6 +16,8 @@
 | 550 | `pds` | TV制約あり |
 
 `alpha=0` のときはTV制約を使わず、単純な勾配法で更新します。`alpha=150, 350, 550` のときは primal-dual splitting によりTV制約付きの更新を行います。
+
+ノイズ条件は `noise_sigma = 0, 1` です。コード上の `noise_sigma` はガウスノイズの標準偏差なので、`noise_sigma=1` は variance=1 の Gaussian noise に対応します。
 
 ## セットアップ
 
@@ -68,7 +70,7 @@ MPLCONFIGDIR=.matplotlib-cache poetry run python src/box-TV-constrained-FWI.py
 
 `MPLCONFIGDIR=.matplotlib-cache` は、GUIのない環境やホームディレクトリに書き込めない環境でMatplotlibの警告を避けるための指定です。
 
-このコマンドを実行すると、`run_alpha_experiments()` が呼ばれ、`alpha = 0, 150, 350, 550` の4実験が順番に走ります。
+このコマンドを実行すると、`run_alpha_experiments()` が呼ばれ、`noise_sigma = 0, 1` と `alpha = 0, 150, 350, 550` の組み合わせで、合計8実験が順番に走ります。
 
 ## 出力される結果
 
@@ -80,6 +82,10 @@ MPLCONFIGDIR=.matplotlib-cache poetry run python src/box-TV-constrained-FWI.py
 
 ```text
 results/
+  20260602_184500_salt_gradient_alpha-0_noise-0_box-1p5-4p5/
+  20260602_185910_salt_pds_alpha-150_noise-0_box-1p5-4p5/
+  20260602_190220_salt_pds_alpha-350_noise-0_box-1p5-4p5/
+  20260602_190540_salt_pds_alpha-550_noise-0_box-1p5-4p5/
   20260602_190710_salt_gradient_alpha-0_noise-1_box-1p5-4p5/
   20260602_191120_salt_pds_alpha-150_noise-1_box-1p5-4p5/
   20260602_192430_salt_pds_alpha-350_noise-1_box-1p5-4p5/
@@ -202,6 +208,7 @@ num_parallels = 20
 ```python
 def run_alpha_experiments(
     alphas: tuple[float, ...] = (0, 150, 350, 550),
+    noise_sigmas: tuple[float, ...] = (0, 1),
     ...
 ):
 ```
@@ -227,10 +234,10 @@ shot数を減らすと計算は軽くなりますが、実験条件が変わり�
 ### ノイズ
 
 ```python
-noise_sigma: float = 1
+noise_sigmas: tuple[float, ...] = (0, 1)
 ```
 
-観測Seismic dataに加えるガウスノイズの標準偏差です。
+観測Seismic dataに加えるガウスノイズの標準偏差です。`0` はノイズなし、`1` は variance=1 の Gaussian noise です。
 
 ### ステップサイズ
 

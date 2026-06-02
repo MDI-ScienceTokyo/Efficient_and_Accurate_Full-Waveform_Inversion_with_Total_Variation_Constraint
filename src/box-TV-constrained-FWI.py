@@ -403,42 +403,43 @@ def simulate_fwi(
 
 def run_alpha_experiments(
     alphas: tuple[float, ...] = (0, 150, 350, 550),
+    noise_sigmas: tuple[float, ...] = (0, 1),
     max_n_iters: int = 5000,
     n_shots: int = 20,
-    noise_sigma: float = 1,
     gamma1: float = 1e-4,
     gamma2: float = 100,
     result_root_path: Path = Path("results"),
     image_name: str = "salt",
     random_seed: Union[int, None] = 0,
 ):
-    for alpha in alphas:
-        if alpha == 0:
-            simulate_fwi(
-                max_n_iters,
-                n_shots,
-                noise_sigma,
-                "gradient",
-                gamma1,
-                None,
-                alpha,
-                result_root_path=result_root_path,
-                image_name=image_name,
-                random_seed=random_seed,
-            )
-        else:
-            simulate_fwi(
-                max_n_iters,
-                n_shots,
-                noise_sigma,
-                "pds",
-                gamma1,
-                gamma2,
-                alpha,
-                result_root_path=result_root_path,
-                image_name=image_name,
-                random_seed=random_seed,
-            )
+    for noise_sigma in noise_sigmas:
+        for alpha in alphas:
+            if alpha == 0:
+                simulate_fwi(
+                    max_n_iters,
+                    n_shots,
+                    noise_sigma,
+                    "gradient",
+                    gamma1,
+                    None,
+                    alpha,
+                    result_root_path=result_root_path,
+                    image_name=image_name,
+                    random_seed=random_seed,
+                )
+            else:
+                simulate_fwi(
+                    max_n_iters,
+                    n_shots,
+                    noise_sigma,
+                    "pds",
+                    gamma1,
+                    gamma2,
+                    alpha,
+                    result_root_path=result_root_path,
+                    image_name=image_name,
+                    random_seed=random_seed,
+                )
 
 
 if __name__ == "__main__":
