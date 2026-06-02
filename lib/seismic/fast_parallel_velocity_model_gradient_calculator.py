@@ -36,10 +36,9 @@ def get_time_length(props: FastParallelVelocityModelGradientCalculatorProps):
 
 class FastParallelVelocityModelGradientCalculator:
     def __init__(self, props: FastParallelVelocityModelGradientCalculatorProps):
+        self.props = props
         self.n_shots = len(props.source_locations)
         self.n_jobs = props.n_jobs
-
-        a = get_time_length(props)
 
         n_receivers = len(props.receiver_locations)
         dsize = props.damping_cell_thickness
@@ -52,7 +51,7 @@ class FastParallelVelocityModelGradientCalculator:
         self.true_observed_waveforms_memory = SharedMemory(create=True, size=self.n_shots * time_length * n_receivers * np.dtype(np.float32).itemsize)
         self.residual_norm_shared_memory = SharedMemory(create=True, size=self.n_shots * np.dtype(np.float32).itemsize)
         self.vm_grad_shared_memory = SharedMemory(create=True, size=self.n_shots * np.prod(vm_shape) * np.dtype(np.float32).itemsize)
-        # self.true_observed_waveform = np.ndarray((self.n_shots, time_length, n_receivers), dtype=np.float32, buffer=self.residual_norm_shared_memory.buf)
+        self.true_observed_waveforms = np.ndarray((self.n_shots, time_length, n_receivers), dtype=np.float32, buffer=self.true_observed_waveforms_memory.buf)
         self.residual_norms = np.ndarray(self.n_shots, dtype=np.float32, buffer=self.residual_norm_shared_memory.buf)
         self.vm_grads = np.ndarray((self.n_shots, vm_shape[0], vm_shape[1]), dtype=np.float32, buffer=self.vm_grad_shared_memory.buf)
 

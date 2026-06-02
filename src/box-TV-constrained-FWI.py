@@ -1,5 +1,9 @@
+import csv
+import json
+import re
 import signal
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, NamedTuple, Union
 
@@ -135,6 +139,78 @@ def remove_damping_cells(velocity_model: npt.NDArray, damping_cell_thickness: in
     return velocity_model[x:-x, x:-x]
 
 
+def filename_value(value: Union[int, float, None]) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, float):
+        value = f"{value:g}"
+    return str(value).replace("-", "m").replace(".", "p")
+
+
+def safe_filename(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_").lower()
+
+
+def build_experiment_name(image_name: str, algorithm: str, alpha: float, noise_sigma: float, box_min_value: float, box_max_value: float) -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return safe_filename(
+        f"{timestamp}_{image_name}_{algorithm}_alpha-{filename_value(alpha)}_noise-{filename_value(noise_sigma)}_box-{filename_value(box_min_value)}-{filename_value(box_max_value)}"
+    )
+
+
+def save_experiment_results(
+    output_dir: Path,
+    config: dict,
+    final_velocity_model_with_damping: npt.NDArray,
+    final_velocity_model: npt.NDArray,
+    dual_variable: npt.NDArray,
+    true_velocity_model: npt.NDArray,
+    initial_velocity_model: npt.NDArray,
+    initial_velocity_model_with_damping: npt.NDArray,
+    observed_seismic_data: npt.NDArray,
+    source_locations: npt.NDArray,
+    receiver_locations: npt.NDArray,
+    objective_history: npt.NDArray,
+    mse_history: npt.NDArray,
+    psnr_history: npt.NDArray,
+    ssim_history: npt.NDArray,
+    tv_history: npt.NDArray,
+):
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    result_path = output_dir.joinpath(f"{output_dir.name}.npz")
+    np.savez_compressed(
+        result_path,
+        final_velocity_model_with_damping=final_velocity_model_with_damping,
+        final_velocity_model=final_velocity_model,
+        dual_variable=dual_variable,
+        true_velocity_model=true_velocity_model,
+        initial_velocity_model=initial_velocity_model,
+        initial_velocity_model_with_damping=initial_velocity_model_with_damping,
+        observed_seismic_data=observed_seismic_data,
+        source_locations=source_locations,
+        receiver_locations=receiver_locations,
+        objective_history=objective_history,
+        mse_history=mse_history,
+        psnr_history=psnr_history,
+        ssim_history=ssim_history,
+        tv_history=tv_history,
+    )
+
+    metrics_path = output_dir.joinpath("metrics.csv")
+    with metrics_path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["iteration", "objective", "mse", "psnr", "ssim", "tv"])
+        for i, values in enumerate(zip(objective_history, mse_history, psnr_history, ssim_history, tv_history), start=1):
+            writer.writerow([i, *values])
+
+    config_path = output_dir.joinpath("config.json")
+    with config_path.open("w") as f:
+        json.dump(config, f, indent=2)
+
+    print(f"Saved experiment results: {output_dir}")
+
+
 # 本来はalgorithmとgamma1, gamma2, alhpaなどのパラメータは紐づくはずだが、一旦これで
 def simulate_fwi(
     max_n_iters: int,
@@ -146,6 +222,9 @@ def simulate_fwi(
     alpha: float,
     visualize_interval: Union[int, None] = None,
     np_log_path: Union[Path, None] = None,
+    result_root_path: Union[Path, None] = Path("results"),
+    image_name: str = "salt",
+    random_seed: Union[int, None] = 0,
 ):
     if algorithm == "gradient":
         gamma2 = None
@@ -161,6 +240,8 @@ def simulate_fwi(
     # load data
     true_velocity_model, initial_velocity_model, vmin, vmax = load_salt_model(params.real_cell_size)
     # true_velocity_model, initial_velocity_model, vmin, vmax = load_overthrust_model(params.real_cell_size)
+    if random_seed is not None:
+        np.random.seed(random_seed)
 
     # simple visualize
     def simple_visualize():
@@ -176,6 +257,8 @@ def simulate_fwi(
         return FastParallelVelocityModelGradientCalculator(props)
 
     grad_calculator = create_grad_calculator()
+    initial_velocity_model_with_damping = grad_calculator.velocity_model.copy()
+    observed_seismic_data = grad_calculator.true_observed_waveforms.copy()
 
     residual_norm_sum_values = ValueHistoryList("objective", "less", [])
     velocity_model_square_error_values = ValueHistoryList("velocity model square error", "less", [])
@@ -188,6 +271,7 @@ def simulate_fwi(
     th = -1
 
     start_time = time.time()
+    elapsed = 0.0
     try:
         while True:
             th += 1
@@ -239,6 +323,7 @@ def simulate_fwi(
                 break
 
     finally:
+        elapsed = time.time() - start_time
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
@@ -256,7 +341,59 @@ def simulate_fwi(
         v_core = remove_damping_cells(v, dsize)
         show_velocity_model(v_core, title=f"Velocity model at final iteration {th + 1}", vmax=vmax, vmin=vmin, cmap="coolwarm")
 
-        print(f"elapsed: {time.time() - start_time}")
+        objective_history = residual_norm_sum_values.values_as_np_array()
+        mse_history = velocity_model_square_error_values.values_as_np_array()
+        psnr_history = psnr_values.values_as_np_array()
+        ssim_history = ssim_values.values_as_np_array()
+        tv_history = total_variation_values.values_as_np_array()
+
+        if result_root_path is not None:
+            experiment_name = build_experiment_name(image_name, algorithm, alpha, noise_sigma, vmin, vmax)
+            output_dir = result_root_path.joinpath(experiment_name)
+            config = {
+                "image_name": image_name,
+                "algorithm": algorithm,
+                "max_n_iters": max_n_iters,
+                "completed_iters": th + 1,
+                "n_shots": n_shots,
+                "noise_sigma": noise_sigma,
+                "gamma1": gamma1,
+                "gamma2": gamma2,
+                "alpha": alpha,
+                "box_min_value": vmin,
+                "box_max_value": vmax,
+                "random_seed": random_seed,
+                "elapsed": elapsed,
+                "real_cell_size": {"x": params.real_cell_size.x, "y": params.real_cell_size.y},
+                "cell_meter_size": {"x": params.cell_meter_size.x, "y": params.cell_meter_size.y},
+                "damping_cell_thickness": params.damping_cell_thickness,
+                "start_time": params.start_time,
+                "unit_time": params.unit_time,
+                "simulation_times": params.simulation_times,
+                "source_peek_time": params.source_peek_time,
+                "source_frequency": params.source_frequency,
+                "n_receivers": params.n_receivers,
+            }
+            save_experiment_results(
+                output_dir,
+                config,
+                v,
+                v_core,
+                y,
+                true_velocity_model,
+                initial_velocity_model,
+                initial_velocity_model_with_damping,
+                observed_seismic_data,
+                grad_calculator.props.source_locations,
+                grad_calculator.props.receiver_locations,
+                objective_history,
+                mse_history,
+                psnr_history,
+                ssim_history,
+                tv_history,
+            )
+
+        print(f"elapsed: {elapsed}")
         # release child process
         del grad_calculator
 
@@ -264,6 +401,45 @@ def simulate_fwi(
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
+def run_alpha_experiments(
+    alphas: tuple[float, ...] = (0, 150, 350, 550),
+    max_n_iters: int = 5000,
+    n_shots: int = 20,
+    noise_sigma: float = 1,
+    gamma1: float = 1e-4,
+    gamma2: float = 100,
+    result_root_path: Path = Path("results"),
+    image_name: str = "salt",
+    random_seed: Union[int, None] = 0,
+):
+    for alpha in alphas:
+        if alpha == 0:
+            simulate_fwi(
+                max_n_iters,
+                n_shots,
+                noise_sigma,
+                "gradient",
+                gamma1,
+                None,
+                alpha,
+                result_root_path=result_root_path,
+                image_name=image_name,
+                random_seed=random_seed,
+            )
+        else:
+            simulate_fwi(
+                max_n_iters,
+                n_shots,
+                noise_sigma,
+                "pds",
+                gamma1,
+                gamma2,
+                alpha,
+                result_root_path=result_root_path,
+                image_name=image_name,
+                random_seed=random_seed,
+            )
+
+
 if __name__ == "__main__":
-    simulate_fwi(5000, 20, 1, "pds", 1e-4, 100, 350)
-    simulate_fwi(5000, 20, 1, "gradient", 1e-4, None, 0)
+    run_alpha_experiments()
