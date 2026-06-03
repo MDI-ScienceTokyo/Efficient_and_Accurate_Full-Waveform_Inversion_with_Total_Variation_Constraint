@@ -1,6 +1,7 @@
 __pycache__
 /tmp
 /datasets
+/data
 /outputs
 /results
 /results_test
