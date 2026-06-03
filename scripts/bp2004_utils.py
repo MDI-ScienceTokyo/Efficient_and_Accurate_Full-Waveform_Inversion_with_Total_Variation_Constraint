@@ -38,23 +38,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "min_velocity": 1450.0,
         "max_velocity": 5500.0,
     },
-    "modeling": {
-        "nt": 1000,
-        "dt": 0.001,
-        "source_frequency_hz": 5.0,
-        "source_depth_m": 25.0,
-        "receiver_depth_m": 25.0,
-        "n_shots": 5,
-        "shot_margin_m": 1000.0,
-        "receiver_spacing_m": 100.0,
-        "absorbing_boundary_cells": 40,
-        "n_jobs": 1,
-    },
-    "gradient": {
-        "parameterization": "velocity",
-        "check_gradient": False,
-        "finite_difference_epsilon": 1.0e-3,
-    },
 }
 
 
@@ -155,26 +138,6 @@ def ensure_dirs(config: dict[str, Any]) -> tuple[Path, Path, Path]:
     return raw_dir, processed_dir, output_dir
 
 
-def build_geometry(vp: np.ndarray, dx: float, dz: float, modeling: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
-    nz, nx = vp.shape
-    x_extent_m = (nx - 1) * dx
-    source_z = float(modeling["source_depth_m"])
-    receiver_z = float(modeling["receiver_depth_m"])
-    margin = min(float(modeling["shot_margin_m"]), max(0.0, x_extent_m / 3.0))
-    n_shots = int(modeling["n_shots"])
-
-    if n_shots <= 1:
-        shot_x = np.array([x_extent_m / 2.0], dtype=np.float32)
-    else:
-        shot_x = np.linspace(margin, x_extent_m - margin, n_shots, dtype=np.float32)
-    source_positions = np.column_stack([np.full(n_shots, source_z, dtype=np.float32), shot_x]).astype(np.float32)
-
-    receiver_spacing = float(modeling["receiver_spacing_m"])
-    rec_x = np.arange(0.0, x_extent_m + 0.5 * receiver_spacing, receiver_spacing, dtype=np.float32)
-    receiver_positions = np.column_stack([np.full(rec_x.size, receiver_z, dtype=np.float32), rec_x]).astype(np.float32)
-    return source_positions, receiver_positions
-
-
 def save_velocity_plot(arr: np.ndarray, path: Path, title: str, dx: float, dz: float, cmap: str = "viridis", label: str = "Velocity [m/s]") -> None:
     import matplotlib.pyplot as plt
 
@@ -186,24 +149,6 @@ def save_velocity_plot(arr: np.ndarray, path: Path, title: str, dx: float, dz: f
     plt.title(title)
     plt.xlabel("X [km]")
     plt.ylabel("Depth [km]")
-    plt.tight_layout()
-    plt.savefig(path, dpi=180)
-    plt.close()
-
-
-def save_shot_gather_plot(data: np.ndarray, path: Path, dt: float, title: str = "Shot gather example") -> None:
-    import matplotlib.pyplot as plt
-
-    nt, nr = data.shape
-    clip = np.percentile(np.abs(data), 99.0)
-    if not np.isfinite(clip) or clip <= 0:
-        clip = float(np.max(np.abs(data))) if data.size else 1.0
-    plt.figure(figsize=(9, 5))
-    plt.imshow(data, cmap="gray", aspect="auto", vmin=-clip, vmax=clip, extent=[0, nr - 1, (nt - 1) * dt, 0])
-    plt.colorbar(label="Amplitude")
-    plt.title(title)
-    plt.xlabel("Receiver index")
-    plt.ylabel("Time [s]")
     plt.tight_layout()
     plt.savefig(path, dpi=180)
     plt.close()

@@ -1,6 +1,6 @@
 # WSL再起動後にBP2004を動かす手順
 
-このメモは、VS CodeでWSLに接続し直したあと、BP2004のgradient実験を再開するための手順です。
+このメモは、VS CodeでWSLに接続し直したあと、BP2004実験を再開するための手順です。
 
 ## 1. WSLを止めて再起動する
 
@@ -76,7 +76,6 @@ python3 -m venv .venv
 ```bash
 ls -lh data/raw/bp2004
 ls -lh data/processed/bp2004
-ls -lh outputs/bp2004_gradient
 ```
 
 すでに以下があれば、ダウンロードと前処理はやり直さなくてよいです。
@@ -85,7 +84,6 @@ ls -lh outputs/bp2004_gradient
 data/raw/bp2004/vel_z6.25m_x12.5m_exact.segy
 data/processed/bp2004/bp2004_exact_crop.npz
 data/processed/bp2004/bp2004_initial_crop.npz
-outputs/bp2004_gradient/observed_data.npz
 ```
 
 足りない場合だけ、順番に作り直します。
@@ -94,101 +92,72 @@ outputs/bp2004_gradient/observed_data.npz
 .venv/bin/python scripts/download_bp2004.py --decompress
 .venv/bin/python scripts/preprocess_bp2004.py --config configs/bp2004_gradient.yaml
 .venv/bin/python scripts/make_bp2004_initial_model.py --config configs/bp2004_gradient.yaml
-.venv/bin/python scripts/run_bp2004_forward.py --config configs/bp2004_gradient.yaml
 ```
 
-## 6. ノイズあり観測データを作る
+## 6. BP2004 gradientを回す
 
-ノイズなし観測データは通常 `outputs/bp2004_gradient/observed_data.npz` です。
-
-ノイズありを作る場合:
+`--alphas 0` にするとTV制約なしのgradient版として動きます。現在のBP2004ドライバは既存の提案法コードの更新経路を使うため、速度のbox制約は有効です。
 
 ```bash
 export MPLCONFIGDIR=.matplotlib-cache
 
-.venv/bin/python scripts/run_bp2004_forward.py \
-  --config configs/bp2004_gradient.yaml \
-  --noise-sigma 0.01 \
-  --seed 0 \
-  --output outputs/bp2004_gradient/observed_data_noise_sigma0p01.npz
+DEVITO_LOGGING=ERROR .venv/bin/python src/box-TV-constrained-FWI-BP2004.py \
+  --max-n-iters 5000 \
+  --alphas 0 \
+  --noise-sigmas 0,0.01 \
+  --n-shots 5 \
+  --n-receivers 201 \
+  --gamma1 1e-6 \
+  --result-root-path results/bp2004
 ```
 
-## 7. 5000回実験を起動する
+## 7. BP2004 TV + box constraintを回す
 
-### ノイズなし
+`--alphas` を正の値にするとTV近接ステップを含む提案法として動きます。
 
 ```bash
 export MPLCONFIGDIR=.matplotlib-cache
 
-DEVITO_LOGGING=ERROR .venv/bin/python -u scripts/run_bp2004_gradient_descent.py \
-  --config configs/bp2004_gradient.yaml \
-  --observed outputs/bp2004_gradient/observed_data.npz \
-  --iterations 5000 \
-  --gamma1 1e-2 \
-  --output-dir outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise0_iter5000 \
-  --progress-interval 1 \
-  > outputs/bp2004_gradient/gradient_descent_noise0_iter5000.log 2>&1 &
+DEVITO_LOGGING=ERROR .venv/bin/python src/box-TV-constrained-FWI-BP2004.py \
+  --max-n-iters 5000 \
+  --alphas 500 \
+  --noise-sigmas 0,0.01 \
+  --n-shots 5 \
+  --n-receivers 201 \
+  --gamma1 1e-6 \
+  --gamma2 100 \
+  --result-root-path results/bp2004
 ```
-
-### ノイズあり
-
-```bash
-export MPLCONFIGDIR=.matplotlib-cache
-
-DEVITO_LOGGING=ERROR .venv/bin/python -u scripts/run_bp2004_gradient_descent.py \
-  --config configs/bp2004_gradient.yaml \
-  --observed outputs/bp2004_gradient/observed_data_noise_sigma0p01.npz \
-  --iterations 5000 \
-  --gamma1 1e-2 \
-  --output-dir outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise_sigma0p01_iter5000 \
-  --progress-interval 1 \
-  > outputs/bp2004_gradient/gradient_descent_noise_sigma0p01_iter5000.log 2>&1 &
-```
-
-コマンドの最後の `&` は「バックグラウンドで実行する」という意味です。
-
-実行直後に次のような表示が出ることがあります。
-
-```text
-[4] 177674
-[5] 177675
-```
-
-これはエラーではありません。`[4]` や `[5]` はジョブ番号、`177674` などはプロセスIDです。
 
 ## 8. 実行中の進捗を見る
 
-最新状態だけ見る:
+このドライバは各iterationで目的関数、モデル誤差、PSNR、SSIM、TVを標準出力に表示します。ログを残したい場合は `tee` を使います。
 
 ```bash
-cat outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise0_iter5000/status.json
-cat outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise_sigma0p01_iter5000/status.json
+DEVITO_LOGGING=ERROR .venv/bin/python src/box-TV-constrained-FWI-BP2004.py \
+  --max-n-iters 5000 \
+  --alphas 0 \
+  --noise-sigmas 0 \
+  --n-shots 5 \
+  --n-receivers 201 \
+  --gamma1 1e-6 \
+  --result-root-path results/bp2004 2>&1 | tee results/bp2004_gradient_noise0.log
 ```
 
-CSVを追いかける:
+バックグラウンド実行する場合は `-u` と `tail -f` を使うと進捗を確認しやすいです。
 
 ```bash
-tail -f outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise0_iter5000/progress.csv
-```
+DEVITO_LOGGING=ERROR .venv/bin/python -u src/box-TV-constrained-FWI-BP2004.py \
+  --max-n-iters 5000 \
+  --alphas 0 \
+  --noise-sigmas 0 \
+  --n-shots 5 \
+  --n-receivers 201 \
+  --gamma1 1e-6 \
+  --result-root-path results/bp2004 \
+  > results/bp2004_gradient_noise0.log 2>&1 &
 
-ログを追いかける:
-
-```bash
-tail -f outputs/bp2004_gradient/gradient_descent_noise0_iter5000.log
-```
-
-10秒ごとに最新状態を見る:
-
-```bash
-while true; do
-  clear
-  echo "noise=0"
-  cat outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise0_iter5000/status.json
-  echo
-  echo "noise_sigma=0.01"
-  cat outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise_sigma0p01_iter5000/status.json
-  sleep 10
-done
+tail -f results/bp2004_gradient_noise0.log
 ```
 
 ## 9. 実行中プロセスを確認・停止する
@@ -196,13 +165,13 @@ done
 確認:
 
 ```bash
-ps -f -u $(whoami) | grep run_bp2004_gradient_descent
+ps -f -u $(whoami) | grep box-TV-constrained-FWI-BP2004.py
 ```
 
 停止:
 
 ```bash
-pkill -f run_bp2004_gradient_descent.py
+pkill -f box-TV-constrained-FWI-BP2004.py
 ```
 
 より慎重に止める場合は、`ps` でPIDを確認してから対象PIDだけ止めます。
@@ -219,23 +188,4 @@ kill -9 <PID>
 
 ## 10. 完了後の出力
 
-各 `--output-dir` に以下が保存されます。
-
-```text
-gradient_descent_result.npz
-metrics.csv
-progress.csv
-status.json
-objective_history.png
-grad_norm_history.png
-model_mse_history.png
-vp_final.png
-vp_final_minus_true.png
-```
-
-最終結果を簡単に見る:
-
-```bash
-cat outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise0_iter5000/status.json
-cat outputs/bp2004_gradient/gradient_descent_no_tv_no_box_noise_sigma0p01_iter5000/status.json
-```
+各実験は `--result-root-path` 以下にタイムスタンプ付きディレクトリとして保存されます。ディレクトリ名にはBP2004、alpha、noise、box範囲が入ります。

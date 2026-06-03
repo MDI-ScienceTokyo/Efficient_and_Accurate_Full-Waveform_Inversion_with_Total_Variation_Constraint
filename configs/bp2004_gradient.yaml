@@ -24,26 +24,3 @@ initial_model:
   smoothing_sigma_x_grid: 40
   min_velocity: 1450.0
   max_velocity: 5500.0
-
-modeling:
-  nt: 1000
-  dt: 0.001
-  source_frequency_hz: 5.0
-  source_depth_m: 25.0
-  receiver_depth_m: 25.0
-  n_shots: 5
-  shot_margin_m: 1000.0
-  receiver_spacing_m: 100.0
-  absorbing_boundary_cells: 40
-  n_jobs: 1
-  noise_sigma: 0.0
-  noise_seed: 0
-
-gradient:
-  parameterization: velocity
-  check_gradient: false
-  finite_difference_epsilon: 1.0e-3
-
-gradient_descent:
-  iterations: 100
-  gamma1: 1.0e-2
