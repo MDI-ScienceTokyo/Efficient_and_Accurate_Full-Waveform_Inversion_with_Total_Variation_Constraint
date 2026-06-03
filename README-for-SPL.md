@@ -72,6 +72,10 @@ MPLCONFIGDIR=.matplotlib-cache poetry run python src/box-TV-constrained-FWI.py
 
 このコマンドを実行すると、`run_alpha_experiments()` が呼ばれ、`noise_sigma = 0, 1` と `alpha = 0, 150, 350, 550` の組み合わせで、合計8実験が順番に走ります。
 
+## BP2004 gradient smoke test
+
+SEG/BP 2004 velocity benchmark data をダウンロードし、切り出し、合成観測データ生成、FWI gradient 1回計算まで確認する手順は [docs/bp2004_gradient.md](docs/bp2004_gradient.md) にまとめています。
+
 ## 出力される結果
 
 実験結果は `results/` 配下に保存されます。各実験ごとに1つのディレクトリが作られます。
