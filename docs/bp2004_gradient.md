@@ -1,6 +1,6 @@
-# BP2004 Gradient Smoke Test
+# BP2004 FWI Workflow
 
-This workflow downloads the SEG/BP 2004 exact velocity model, crops it to a smaller 2D model, creates a smoothed initial model, generates synthetic observed data, and computes one FWI objective/gradient at the initial model.
+This workflow downloads the SEG/BP 2004 exact velocity model, crops it to a smaller 2D model, creates a smoothed initial model, and runs BP2004 FWI with the repository's proposed box-TV code path.
 
 Install the project dependencies first. SEG-Y reading uses `segyio` when available and falls back to `obspy`.
 
@@ -9,39 +9,46 @@ poetry install
 poetry run pip install pyyaml segyio
 ```
 
-Run the workflow:
+Prepare the BP2004 model:
 
 ```bash
 python scripts/download_bp2004.py --decompress
 python scripts/preprocess_bp2004.py --config configs/bp2004_gradient.yaml
 python scripts/make_bp2004_initial_model.py --config configs/bp2004_gradient.yaml
-python scripts/run_bp2004_forward.py --config configs/bp2004_gradient.yaml
-python scripts/run_bp2004_gradient.py --config configs/bp2004_gradient.yaml
-python scripts/plot_bp2004_results.py --config configs/bp2004_gradient.yaml
 ```
 
-To generate noisy synthetic observed data, pass `--noise-sigma` and `--seed`:
-
-```bash
-python scripts/run_bp2004_forward.py \
-  --config configs/bp2004_gradient.yaml \
-  --noise-sigma 0.01 \
-  --seed 0 \
-  --output outputs/bp2004_gradient/observed_data_noise_sigma0p01.npz
-```
-
-Expected outputs:
+Expected prepared data:
 
 ```text
 data/processed/bp2004/bp2004_exact_crop.npz
 data/processed/bp2004/bp2004_initial_crop.npz
-outputs/bp2004_gradient/observed_data.npz
-outputs/bp2004_gradient/gradient_result.npz
-outputs/bp2004_gradient/vp_true.png
-outputs/bp2004_gradient/vp_initial.png
-outputs/bp2004_gradient/vp_difference.png
-outputs/bp2004_gradient/gradient.png
-outputs/bp2004_gradient/shot_gather_example.png
 ```
 
-The saved velocity arrays are in m/s. Devito modeling converts them internally to km/s, matching the existing FWI code in this repository.
+Run gradient descent without TV by setting `--alphas 0`. The BP2004 driver still applies the configured velocity box bounds, matching the existing box-constrained update path.
+
+```bash
+MPLCONFIGDIR=.matplotlib-cache DEVITO_LOGGING=ERROR .venv/bin/python src/box-TV-constrained-FWI-BP2004.py \
+  --max-n-iters 5000 \
+  --alphas 0 \
+  --noise-sigmas 0,0.01 \
+  --n-shots 5 \
+  --n-receivers 201 \
+  --gamma1 1e-6 \
+  --result-root-path results/bp2004
+```
+
+Run the proposed TV + box constrained version by using a positive `--alphas` value:
+
+```bash
+MPLCONFIGDIR=.matplotlib-cache DEVITO_LOGGING=ERROR .venv/bin/python src/box-TV-constrained-FWI-BP2004.py \
+  --max-n-iters 5000 \
+  --alphas 500 \
+  --noise-sigmas 0,0.01 \
+  --n-shots 5 \
+  --n-receivers 201 \
+  --gamma1 1e-6 \
+  --gamma2 100 \
+  --result-root-path results/bp2004
+```
+
+The saved velocity arrays in `data/processed/bp2004` are in m/s. The BP2004 FWI driver converts them to km/s internally, matching the existing FWI code in this repository.
