@@ -1,3 +1,4 @@
+import argparse
 import csv
 import json
 import re
@@ -23,8 +24,7 @@ from lib.visualize import show_velocity_model
 
 set_log_level("WARNING")
 
-# Marmousi is wider than the Salt example. Keep this lower than the Salt setting.
-num_parallels = 4
+DEFAULT_MODEL_PATH = Path("datasets/marmousi/processed/marmousi_full_extent_full_extent_351x1701_10m.npz")
 
 
 class FWIParams(NamedTuple):
@@ -46,6 +46,8 @@ class VelocityModelDataForOptimization(NamedTuple):
     initial_data: npt.NDArray
     box_min_value: float
     box_max_value: float
+    dz_m: float
+    dx_m: float
 
 
 def filename_value(value: Union[int, float, None]) -> str:
@@ -72,49 +74,58 @@ def remove_damping_cells(velocity_model: npt.NDArray, damping_cell_thickness: in
     return velocity_model[x:-x, x:-x]
 
 
-def isotropic_tv_2d(x: np.ndarray) -> float:
-    dz = np.diff(x, axis=0, append=x[-1:, :])
-    dx = np.diff(x, axis=1, append=x[:, -1:])
-    return float(np.sum(np.sqrt(dx**2 + dz**2)))
+def parse_float_tuple(text: str) -> tuple[float, ...]:
+    return tuple(float(x) for x in text.split(",") if x.strip())
 
 
-def load_marmousi_model() -> VelocityModelDataForOptimization:
-    processed_dir = Path("datasets/marmousi/processed")
-    true_candidates = sorted(processed_dir.glob("marmousi_vp_true_full_*.npy"))
-    init_candidates = sorted(processed_dir.glob("marmousi_vp_init_full_*.npy"))
+def load_marmousi_full_model(path: Path = DEFAULT_MODEL_PATH) -> VelocityModelDataForOptimization:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Marmousi full-extent processed file was not found: {path}. "
+            "Run: MPLBACKEND=Agg MPLCONFIGDIR=.matplotlib-cache .venv/bin/python scripts/prepare_marmousi_full_extent.py"
+        )
 
-    if not true_candidates or not init_candidates:
-        raise FileNotFoundError("Marmousi processed files were not found. Run: poetry run python scripts/prepare_marmousi.py")
-
-    true_velocity_model = np.load(true_candidates[-1]).astype(np.float32)
-    initial_velocity_model = np.load(init_candidates[-1]).astype(np.float32)
-
-    if np.nanmax(true_velocity_model) > 20:
+    data = np.load(path, allow_pickle=True)
+    true_velocity_model = data["vp_true"].astype(np.float32)
+    initial_velocity_model = data["vp0"].astype(np.float32)
+    if float(np.nanmax(true_velocity_model)) > 20.0:
         true_velocity_model = true_velocity_model / 1000.0
-    if np.nanmax(initial_velocity_model) > 20:
+    if float(np.nanmax(initial_velocity_model)) > 20.0:
         initial_velocity_model = initial_velocity_model / 1000.0
 
+    dz_m = float(data["dz"])
+    dx_m = float(data["dx"])
     box_min_value = float(np.floor(float(true_velocity_model.min()) * 10) / 10)
     box_max_value = float(np.ceil(float(true_velocity_model.max()) * 10) / 10)
 
-    print("Marmousi true:", true_velocity_model.shape, float(true_velocity_model.min()), float(true_velocity_model.max()))
-    print("Marmousi init:", initial_velocity_model.shape, float(initial_velocity_model.min()), float(initial_velocity_model.max()))
-    print("Marmousi box constraint:", box_min_value, box_max_value)
+    print(f"Loaded Marmousi full-extent model from {path}")
+    print(f"  shape: {true_velocity_model.shape}, spacing: dz={dz_m:g} m, dx={dx_m:g} m")
+    print(f"  true velocity range: {float(true_velocity_model.min()):.4f} - {float(true_velocity_model.max()):.4f} km/s")
+    print(f"  initial velocity range: {float(initial_velocity_model.min()):.4f} - {float(initial_velocity_model.max()):.4f} km/s")
+    print(f"  box constraint: {box_min_value:.4f} - {box_max_value:.4f} km/s")
+    return VelocityModelDataForOptimization(true_velocity_model, initial_velocity_model, box_min_value, box_max_value, dz_m, dx_m)
 
-    return VelocityModelDataForOptimization(true_velocity_model, initial_velocity_model, box_min_value, box_max_value)
 
-
-def marmousi_configuration(shape: tuple[int, int], n_shots: int, n_receivers: int, noise_sigma: float) -> FWIParams:
+def marmousi_full_configuration(
+    shape: tuple[int, int],
+    dz_m: float,
+    dx_m: float,
+    n_shots: int,
+    n_receivers: int,
+    noise_sigma: float,
+    simulation_times: int,
+    source_frequency: float,
+) -> FWIParams:
     nz, nx = shape
     return FWIParams(
         real_cell_size=Vec2D(nx, nz),
-        cell_meter_size=Vec2D(10.0, 10.0),
+        cell_meter_size=Vec2D(dx_m, dz_m),
         damping_cell_thickness=40,
         start_time=0,
         unit_time=1,
-        simulation_times=1000,
+        simulation_times=simulation_times,
         source_peek_time=100,
-        source_frequency=0.01,
+        source_frequency=source_frequency,
         n_shots=n_shots,
         n_receivers=min(n_receivers, nx),
         noise_sigma=noise_sigma,
@@ -122,13 +133,16 @@ def marmousi_configuration(shape: tuple[int, int], n_shots: int, n_receivers: in
 
 
 def fwi_params_to_fast_parallel_velocity_model_gradient_calculator_props(
-    params: FWIParams, true_velocity_model: npt.NDArray, initial_velocity_model: npt.NDArray
+    params: FWIParams,
+    true_velocity_model: npt.NDArray,
+    initial_velocity_model: npt.NDArray,
+    num_parallel_workers: int,
 ) -> FastParallelVelocityModelGradientCalculatorProps:
     shape = (params.real_cell_size.y, params.real_cell_size.x)
     spacing = (params.cell_meter_size.y, params.cell_meter_size.x)
     width = ((params.real_cell_size - Vec2D(1, 1)) * params.cell_meter_size).x
-    source_locations = np.array([[30, x] for x in np.linspace(0, width, num=params.n_shots)])
-    receiver_locations = np.array([[30, x] for x in np.linspace(0, width, num=params.n_receivers)])
+    source_locations = np.array([[30, x] for x in np.linspace(0, width, num=params.n_shots)], dtype=np.float32)
+    receiver_locations = np.array([[30, x] for x in np.linspace(0, width, num=params.n_receivers)], dtype=np.float32)
     return FastParallelVelocityModelGradientCalculatorProps(
         true_velocity_model,
         initial_velocity_model,
@@ -141,7 +155,7 @@ def fwi_params_to_fast_parallel_velocity_model_gradient_calculator_props(
         source_locations,
         receiver_locations,
         params.noise_sigma,
-        num_parallels,
+        num_parallel_workers,
     )
 
 
@@ -164,7 +178,6 @@ def save_experiment_results(
     tv_history: npt.NDArray,
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
-
     result_path = output_dir.joinpath(f"{output_dir.name}.npz")
     np.savez_compressed(
         result_path,
@@ -199,15 +212,19 @@ def save_experiment_results(
 def simulate_fwi(
     max_n_iters: int,
     n_shots: int,
+    n_receivers: int,
     noise_sigma: float,
     algorithm: Union[Literal["pds"], Literal["gradient"]],
     gamma1: float,
     gamma2: Union[float, None],
     alpha: float,
-    n_receivers: int = 101,
+    model_path: Path,
+    simulation_times: int = 1000,
+    source_frequency: float = 0.01,
+    num_parallel_workers: int = 1,
     visualize_interval: Union[int, None] = None,
-    result_root_path: Union[Path, None] = Path("results/marmousi"),
-    image_name: str = "marmousi",
+    result_root_path: Union[Path, None] = Path("results/marmousi_full"),
+    image_name: str = "marmousi_full",
     random_seed: Union[int, None] = 0,
 ):
     if algorithm == "gradient":
@@ -215,19 +232,20 @@ def simulate_fwi(
     if algorithm == "pds" and gamma2 is None:
         raise ValueError("gamma2 must be set when algorithm is pds")
 
-    true_velocity_model, initial_velocity_model, vmin, vmax = load_marmousi_model()
+    model_data = load_marmousi_full_model(model_path)
+    true_velocity_model, initial_velocity_model, vmin, vmax, dz_m, dx_m = model_data
     if random_seed is not None:
         np.random.seed(random_seed)
 
-    params = marmousi_configuration(true_velocity_model.shape, n_shots, n_receivers, noise_sigma)
+    params = marmousi_full_configuration(true_velocity_model.shape, dz_m, dx_m, n_shots, n_receivers, noise_sigma, simulation_times, source_frequency)
     dsize = params.damping_cell_thickness
 
-    show_velocity_model(true_velocity_model, vmax=vmax, vmin=vmin, title="marmousi true velocity model", cmap="coolwarm")
-    show_velocity_model(initial_velocity_model, vmax=vmax, vmin=vmin, title="marmousi initial velocity model", cmap="coolwarm")
+    show_velocity_model(true_velocity_model, vmax=vmax, vmin=vmin, title="marmousi full true velocity model", cmap="coolwarm")
+    show_velocity_model(initial_velocity_model, vmax=vmax, vmin=vmin, title="marmousi full initial velocity model", cmap="coolwarm")
     total_variation_of_true_velocity_model = L12_norm(diff_op.D(true_velocity_model))
-    print(f"TV of true velocity model: {total_variation_of_true_velocity_model}, alpha: {alpha}, ratio: {alpha / total_variation_of_true_velocity_model}")
+    print(f"TV of true velocity model: {total_variation_of_true_velocity_model}, alpha: {alpha}, ratio: {alpha / total_variation_of_true_velocity_model if total_variation_of_true_velocity_model else 0}")
 
-    props = fwi_params_to_fast_parallel_velocity_model_gradient_calculator_props(params, true_velocity_model, initial_velocity_model)
+    props = fwi_params_to_fast_parallel_velocity_model_gradient_calculator_props(params, true_velocity_model, initial_velocity_model, num_parallel_workers)
     grad_calculator = FastParallelVelocityModelGradientCalculator(props)
     initial_velocity_model_with_damping = grad_calculator.velocity_model.copy()
     observed_seismic_data = grad_calculator.true_observed_waveforms.copy()
@@ -241,14 +259,14 @@ def simulate_fwi(
     v = grad_calculator.velocity_model.copy()
     y = diff_op.D(remove_damping_cells(v, dsize))
     th = -1
-
     start_time = time.perf_counter()
     elapsed = 0.0
     try:
         while True:
             th += 1
             residual_norm_sum, grad = grad_calculator.calc_grad(v)
-            if np.isnan(residual_norm_sum):
+            if not np.isfinite(residual_norm_sum):
+                print(f"stopped: objective became non-finite at iteration {th + 1}: {residual_norm_sum}")
                 break
 
             if algorithm == "gradient":
@@ -261,6 +279,13 @@ def simulate_fwi(
                 v[dsize:-dsize, dsize:-dsize] = prox_box_constraint(remove_damping_cells(v, dsize), vmin, vmax)
                 y = y + gamma2 * diff_op.D(2 * remove_damping_cells(v, dsize) - remove_damping_cells(prev_v, dsize))
                 y = y - gamma2 * proj_L12_norm_ball(y / gamma2, alpha)
+
+            if not np.all(np.isfinite(v)):
+                print(f"stopped: velocity model became non-finite after iteration {th + 1}")
+                break
+            if float(np.min(v)) <= 0.0:
+                print(f"stopped: velocity model became non-positive after iteration {th + 1}; min_velocity={float(np.min(v)):.6g} km/s")
+                break
 
             v_core = remove_damping_cells(v, dsize)
             velocity_model_diff = v_core - true_velocity_model
@@ -281,7 +306,7 @@ def simulate_fwi(
             )
 
             if visualize_interval is not None and (th + 1) % visualize_interval == 0:
-                show_velocity_model(v_core, title=f"marmousi velocity model at iteration {th + 1}", vmax=vmax, vmin=vmin, cmap="coolwarm")
+                show_velocity_model(v_core, title=f"marmousi full velocity model at iteration {th + 1}", vmax=vmax, vmin=vmin, cmap="coolwarm")
 
             if th == max_n_iters - 1:
                 break
@@ -291,7 +316,7 @@ def simulate_fwi(
         signal.signal(signal.SIGINT, signal.SIG_IGN)
 
         v_core = remove_damping_cells(v, dsize)
-        show_velocity_model(v_core, title=f"marmousi velocity model at final iteration {th + 1}", vmax=vmax, vmin=vmin, cmap="coolwarm")
+        show_velocity_model(v_core, title=f"marmousi full velocity model at final iteration {th + 1}", vmax=vmax, vmin=vmin, cmap="coolwarm")
 
         objective_history = np.asarray(residual_norm_sum_values)
         mse_history = np.asarray(velocity_model_square_error_values)
@@ -325,6 +350,9 @@ def simulate_fwi(
                 "simulation_times": params.simulation_times,
                 "source_peek_time": params.source_peek_time,
                 "source_frequency": params.source_frequency,
+                "model_path": str(model_path),
+                "num_parallel_workers": num_parallel_workers,
+                "velocity_unit": "km/s",
             }
             save_experiment_results(
                 output_dir,
@@ -347,90 +375,104 @@ def simulate_fwi(
 
         print(f"elapsed: {elapsed}")
         del grad_calculator
-
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 
 
-def run_marmousi_experiments(
-    max_n_iters: int = 10,
-    n_shots: int = 3,
-    n_receivers: int = 101,
-    noise_sigma: float = 0.0,
-    gamma1: float = 1e-6,
-    gamma2: float = 100,
+def run_marmousi_full_experiments(
+    max_n_iters: int,
+    n_shots: int,
+    n_receivers: int,
+    noise_sigma: float,
+    gamma1: float,
+    gamma2: float,
+    model_path: Path,
+    alpha_values: tuple[float, ...] | None = None,
     alpha_scales: tuple[float, ...] = (0.8,),
-    include_gradient_baseline: bool = False,
-    result_root_path: Path = Path("results/marmousi"),
-    image_name: str = "marmousi",
+    simulation_times: int = 1000,
+    source_frequency: float = 0.01,
+    num_parallel_workers: int = 1,
+    result_root_path: Path = Path("results/marmousi_full"),
     random_seed: Union[int, None] = 0,
 ):
-    true_velocity_model, _, _, _ = load_marmousi_model()
-    alpha_gt = isotropic_tv_2d(true_velocity_model)
-    alpha_values = [scale * alpha_gt for scale in alpha_scales]
-    print(f"Marmousi isotropic TV: {alpha_gt}")
-    print(f"Marmousi alpha values: {alpha_values}")
+    true_velocity_model, _, _, _, _, _ = load_marmousi_full_model(model_path)
+    tv_true = L12_norm(diff_op.D(true_velocity_model))
+    if alpha_values is None:
+        alpha_values = tuple(scale * tv_true for scale in alpha_scales)
 
-    if include_gradient_baseline:
-        simulate_fwi(
-            max_n_iters,
-            n_shots,
-            noise_sigma,
-            "gradient",
-            gamma1,
-            None,
-            0,
-            n_receivers=n_receivers,
-            result_root_path=result_root_path,
-            image_name=image_name,
-            random_seed=random_seed,
-        )
+    print(f"Marmousi full TV: {tv_true}")
+    print(f"Marmousi full alpha values: {alpha_values}")
 
     for alpha in alpha_values:
-        simulate_fwi(
-            max_n_iters,
-            n_shots,
-            noise_sigma,
-            "pds",
-            gamma1,
-            gamma2,
-            alpha,
-            n_receivers=n_receivers,
-            result_root_path=result_root_path,
-            image_name=image_name,
-            random_seed=random_seed,
-        )
-
-
-def run_marmousi_noisy_experiments(
-    max_n_iters: int = 10,
-    n_shots: int = 3,
-    n_receivers: int = 101,
-    noise_sigma: float = 1.0,
-    gamma1: float = 1e-6,
-    gamma2: float = 100,
-    alpha_scales: tuple[float, ...] = (0.8,),
-    include_gradient_baseline: bool = False,
-    result_root_path: Path = Path("results/marmousi-noisy"),
-    random_seed: Union[int, None] = 0,
-):
-    if noise_sigma <= 0:
-        raise ValueError("run_marmousi_noisy_experiments requires a positive noise_sigma")
-
-    run_marmousi_experiments(
-        max_n_iters=max_n_iters,
-        n_shots=n_shots,
-        n_receivers=n_receivers,
-        noise_sigma=noise_sigma,
-        gamma1=gamma1,
-        gamma2=gamma2,
-        alpha_scales=alpha_scales,
-        include_gradient_baseline=include_gradient_baseline,
-        result_root_path=result_root_path,
-        image_name="marmousi_noisy",
-        random_seed=random_seed,
-    )
+        if alpha == 0:
+            simulate_fwi(
+                max_n_iters,
+                n_shots,
+                n_receivers,
+                noise_sigma,
+                "gradient",
+                gamma1,
+                None,
+                alpha,
+                model_path=model_path,
+                simulation_times=simulation_times,
+                source_frequency=source_frequency,
+                num_parallel_workers=num_parallel_workers,
+                result_root_path=result_root_path,
+                random_seed=random_seed,
+            )
+        else:
+            simulate_fwi(
+                max_n_iters,
+                n_shots,
+                n_receivers,
+                noise_sigma,
+                "pds",
+                gamma1,
+                gamma2,
+                alpha,
+                model_path=model_path,
+                simulation_times=simulation_times,
+                source_frequency=source_frequency,
+                num_parallel_workers=num_parallel_workers,
+                result_root_path=result_root_path,
+                random_seed=random_seed,
+            )
 
 
 if __name__ == "__main__":
-    run_marmousi_noisy_experiments()
+    parser = argparse.ArgumentParser(description="Run FWI on the full-physical-extent Marmousi model.")
+    parser.add_argument("--max-n-iters", type=int, default=10)
+    parser.add_argument("--n-shots", type=int, default=10)
+    parser.add_argument("--n-receivers", type=int, default=201)
+    parser.add_argument("--noise-sigma", type=float, default=0.0)
+    parser.add_argument("--gamma1", type=float, default=1e-6)
+    parser.add_argument("--gamma2", type=float, default=100.0)
+    parser.add_argument("--alphas", default=None, help="Comma-separated alpha values. Use 0 for gradient baseline.")
+    parser.add_argument("--alpha-scales", default="0.8", help="Comma-separated alpha scales relative to TV(true), used when --alphas is omitted.")
+    parser.add_argument("--simulation-times", type=int, default=1000)
+    parser.add_argument("--source-frequency", type=float, default=0.01)
+    parser.add_argument("--num-parallel-workers", type=int, default=1)
+    parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--result-root-path", type=Path, default=Path("results/marmousi_full"))
+    parser.add_argument("--random-seed", type=int, default=0)
+    args = parser.parse_args()
+
+    alpha_values = parse_float_tuple(args.alphas) if args.alphas is not None else None
+    alpha_scales = parse_float_tuple(args.alpha_scales)
+    run_marmousi_full_experiments(
+        max_n_iters=args.max_n_iters,
+        n_shots=args.n_shots,
+        n_receivers=args.n_receivers,
+        noise_sigma=args.noise_sigma,
+        gamma1=args.gamma1,
+        gamma2=args.gamma2,
+        model_path=args.model_path,
+        alpha_values=alpha_values,
+        alpha_scales=alpha_scales,
+        simulation_times=args.simulation_times,
+        source_frequency=args.source_frequency,
+        num_parallel_workers=args.num_parallel_workers,
+        result_root_path=args.result_root_path,
+        random_seed=args.random_seed,
+    )
