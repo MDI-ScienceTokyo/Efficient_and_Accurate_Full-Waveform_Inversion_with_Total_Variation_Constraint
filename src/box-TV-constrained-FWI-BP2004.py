@@ -250,6 +250,7 @@ def simulate_fwi(
     model_data, dx_m, dz_m = load_bp2004_model(model_path)
     true_velocity_model, initial_velocity_model, vmin, vmax = model_data
     params = bp2004_configuration(true_velocity_model.shape, dx_m, dz_m, n_shots, n_receivers, noise_sigma)
+    print(f"num_parallels: {num_parallels}")
 
     # alias
     dsize = params.damping_cell_thickness
@@ -398,6 +399,7 @@ def simulate_fwi(
                 "source_peek_time": params.source_peek_time,
                 "source_frequency": params.source_frequency,
                 "n_receivers": params.n_receivers,
+                "num_parallels": num_parallels,
                 "source_depth": params.source_depth,
                 "receiver_depth": params.receiver_depth,
                 "shot_margin": params.shot_margin,
@@ -443,7 +445,13 @@ def run_alpha_experiments(
     image_name: str = "bp2004",
     random_seed: Union[int, None] = 0,
     model_path: Path = BP2004_INITIAL_MODEL_PATH,
+    num_parallel_workers: int = 1,
 ):
+    global num_parallels
+    if num_parallel_workers < 1:
+        raise ValueError("num_parallel_workers must be >= 1")
+    num_parallels = num_parallel_workers
+
     for noise_sigma in noise_sigmas:
         for alpha in alphas:
             if alpha == 0:
@@ -490,6 +498,7 @@ if __name__ == "__main__":
     parser.add_argument("--result-root-path", type=Path, default=Path("results/bp2004"))
     parser.add_argument("--model-path", type=Path, default=BP2004_INITIAL_MODEL_PATH)
     parser.add_argument("--random-seed", type=int, default=0)
+    parser.add_argument("--num-parallels", type=int, default=1, help="Number of parallel worker processes for gradient calculation.")
     args = parser.parse_args()
 
     alphas = tuple(float(x) for x in args.alphas.split(",") if x.strip())
@@ -505,4 +514,5 @@ if __name__ == "__main__":
         result_root_path=args.result_root_path,
         random_seed=args.random_seed,
         model_path=args.model_path,
+        num_parallel_workers=args.num_parallels,
     )
