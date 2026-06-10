@@ -12,3 +12,13 @@ __pycache__
 .matplotlib-cache
 
 .DS_Store
+
+# TL-FWI comparison workspace generated artifacts
+/comparison/Accelerating_FWI_By_Transfer_Learning/.venv/
+/comparison/Accelerating_FWI_By_Transfer_Learning/data/
+/comparison/Accelerating_FWI_By_Transfer_Learning/results/
+/comparison/Accelerating_FWI_By_Transfer_Learning/reports/assets/
+/comparison/Accelerating_FWI_By_Transfer_Learning/**/__pycache__/
+/comparison/Accelerating_FWI_By_Transfer_Learning/**/*.pyc
+/comparison/Accelerating_FWI_By_Transfer_Learning/.pytest_cache/
+.pytest_cache/
