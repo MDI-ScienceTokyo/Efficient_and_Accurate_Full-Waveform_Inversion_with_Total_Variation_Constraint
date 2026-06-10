@@ -125,9 +125,11 @@ DEVITO_LOGGING=ERROR .venv/bin/python src/box-TV-constrained-FWI-BP2004.py \
   --n-shots 5 \
   --n-receivers 201 \
   --gamma1 1e-6 \
-  --gamma2 100 \
+  --gamma2 100000 \
   --result-root-path results/bp2004
 ```
+
+BP2004では `gamma1=1e-6` に対して `gamma2=100` だとTV制約の効きがかなり遅くなります。`gamma2=100000` 程度に上げるとTV制約が効きやすくなります。安定条件はコード側で `gamma1 * gamma2 * 8 < 1` として確認されます。
 
 ## 8. 実行中の進捗を見る
 

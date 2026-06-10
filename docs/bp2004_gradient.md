@@ -47,8 +47,10 @@ MPLCONFIGDIR=.matplotlib-cache DEVITO_LOGGING=ERROR .venv/bin/python src/box-TV-
   --n-shots 5 \
   --n-receivers 201 \
   --gamma1 1e-6 \
-  --gamma2 100 \
+  --gamma2 100000 \
   --result-root-path results/bp2004
 ```
+
+For BP2004, `gamma1=1e-6` is used to keep the FWI gradient update stable. With that small primal step, `gamma2=100` makes the TV constraint converge extremely slowly. Use a much larger dual step such as `gamma2=100000`; the driver checks the PDS condition `gamma1 * gamma2 * 8 < 1`.
 
 The saved velocity arrays in `data/processed/bp2004` are in m/s. The BP2004 FWI driver converts them to km/s internally, matching the existing FWI code in this repository.

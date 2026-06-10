@@ -32,6 +32,7 @@ set_log_level("WARNING")
 num_parallels = 1
 
 BP2004_INITIAL_MODEL_PATH = Path("data/processed/bp2004/bp2004_initial_crop.npz")
+DIFF_OPERATOR_NORM_SQUARED_UPPER_BOUND = 8.0
 
 
 class FWIParams(NamedTuple):
@@ -172,6 +173,16 @@ def build_experiment_name(image_name: str, algorithm: str, alpha: float, noise_s
     )
 
 
+def validate_pds_steps(gamma1: float, gamma2: float) -> None:
+    stability_value = gamma1 * gamma2 * DIFF_OPERATOR_NORM_SQUARED_UPPER_BOUND
+    if stability_value >= 1.0:
+        raise ValueError(
+            "PDS step sizes are unstable: "
+            f"gamma1 * gamma2 * ||D||^2 <= gamma1 * gamma2 * 8 = {stability_value:g} must be < 1. "
+            "Decrease gamma1 or gamma2."
+        )
+
+
 def save_experiment_results(
     output_dir: Path,
     config: dict,
@@ -246,6 +257,8 @@ def simulate_fwi(
         gamma2 = None
     if algorithm == "pds" and gamma2 is None:
         raise ValueError("gamma2 must be set when algorithm is pds")
+    if algorithm == "pds":
+        validate_pds_steps(gamma1, gamma2)
 
     model_data, dx_m, dz_m = load_bp2004_model(model_path)
     true_velocity_model, initial_velocity_model, vmin, vmax = model_data
@@ -264,6 +277,12 @@ def simulate_fwi(
         show_velocity_model(initial_velocity_model, vmax=vmax, vmin=vmin, title="initial velocity model", cmap="coolwarm")
         total_variation_of_true_velocity_model = L12_norm(diff_op.D(true_velocity_model))
         print(f"TV of true velocity model: {total_variation_of_true_velocity_model}, alpha: {alpha}, ratio: {alpha / total_variation_of_true_velocity_model}")
+        if algorithm == "pds":
+            print(
+                "PDS step scales: "
+                f"gamma1={gamma1:g}, gamma2={gamma2:g}, "
+                f"gamma1*gamma2*8={gamma1 * gamma2 * DIFF_OPERATOR_NORM_SQUARED_UPPER_BOUND:g}"
+            )
 
     simple_visualize()
 
@@ -282,7 +301,7 @@ def simulate_fwi(
     total_variation_values = ValueHistoryList("TV", None, [])
 
     v = grad_calculator.velocity_model.copy()
-    y = diff_op.D(remove_damping_cells(v, dsize))
+    y = np.zeros_like(diff_op.D(remove_damping_cells(v, dsize)))
     th = -1
 
     start_time = time.perf_counter()
@@ -440,7 +459,7 @@ def run_alpha_experiments(
     n_shots: int = 5,
     n_receivers: int = 201,
     gamma1: float = 1e-6,
-    gamma2: float = 100,
+    gamma2: float = 100000,
     result_root_path: Path = Path("results/bp2004"),
     image_name: str = "bp2004",
     random_seed: Union[int, None] = 0,
@@ -492,7 +511,15 @@ if __name__ == "__main__":
     parser.add_argument("--n-shots", type=int, default=5)
     parser.add_argument("--n-receivers", type=int, default=201)
     parser.add_argument("--gamma1", type=float, default=1e-6)
-    parser.add_argument("--gamma2", type=float, default=100.0)
+    parser.add_argument(
+        "--gamma2",
+        type=float,
+        default=100000.0,
+        help=(
+            "Dual step size for the TV constraint. For BP2004 with gamma1=1e-6, "
+            "values around 1e5 make the TV constraint active while satisfying gamma1*gamma2*8 < 1."
+        ),
+    )
     parser.add_argument("--alphas", default="0", help="Comma-separated alpha values. Use 0 for the plain gradient baseline.")
     parser.add_argument("--noise-sigmas", default="0", help="Comma-separated Gaussian noise sigma values.")
     parser.add_argument("--result-root-path", type=Path, default=Path("results/bp2004"))
