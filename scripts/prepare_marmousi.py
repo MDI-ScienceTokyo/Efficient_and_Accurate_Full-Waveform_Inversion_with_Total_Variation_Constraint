@@ -19,6 +19,8 @@ EXTRACTED_DIR = RAW_DIR / "elastic-marmousi-model"
 
 # Use the full Marmousi extent and downsample while preserving aspect ratio.
 TARGET_NZ = 101
+ORIGINAL_DZ_M = 1.25
+ORIGINAL_DX_M = 1.25
 
 # Initial model smoothing in downsampled pixel units.
 INIT_SMOOTH_SIGMA = 8.0
@@ -116,8 +118,12 @@ def read_segy_as_2d_array(path: Path) -> np.ndarray:
     print(f"[read] {path}")
     segy = _read_segy(str(path))
 
+    raw_vp = np.array([tr.data for tr in segy.traces], dtype=np.float32)
+    print(f"[info] raw VP trace-major shape={raw_vp.shape}")
+
     # Interpret each trace as a vertical column: output shape is (nz, nx).
-    vp = np.array([tr.data for tr in segy.traces], dtype=np.float32).T
+    vp = raw_vp.T
+    print("[info] interpreted orientation: axis 0 = depth, axis 1 = horizontal")
 
     # Convert m/s to km/s if needed.
     if np.nanmax(vp) > 20:
@@ -126,11 +132,11 @@ def read_segy_as_2d_array(path: Path) -> np.ndarray:
     median_value = float(np.nanmedian(vp))
     vp = np.nan_to_num(vp, nan=median_value, posinf=median_value, neginf=median_value).astype(np.float32)
 
-    print(f"[info] original shape={vp.shape}, min={vp.min():.4f}, max={vp.max():.4f}")
+    print(f"[info] original oriented shape={vp.shape}, min={vp.min():.4f}, max={vp.max():.4f}")
     return vp
 
 
-def resize_full_model_preserving_aspect(vp: np.ndarray) -> np.ndarray:
+def resize_full_model_preserving_aspect(vp: np.ndarray) -> tuple[np.ndarray, dict[str, object]]:
     original_nz, original_nx = vp.shape
     target_nx = int(round(original_nx / original_nz * TARGET_NZ))
 
@@ -138,9 +144,29 @@ def resize_full_model_preserving_aspect(vp: np.ndarray) -> np.ndarray:
     scale_x = target_nx / original_nx
 
     vp_resized = zoom(vp, (scale_z, scale_x), order=1).astype(np.float32)
+    target_nz, target_nx = vp_resized.shape
+    effective_dz_m = ORIGINAL_DZ_M * original_nz / target_nz
+    effective_dx_m = ORIGINAL_DX_M * original_nx / target_nx
+    metadata = {
+        "original_nz": original_nz,
+        "original_nx": original_nx,
+        "target_nz": target_nz,
+        "target_nx": target_nx,
+        "original_dz_m": ORIGINAL_DZ_M,
+        "original_dx_m": ORIGINAL_DX_M,
+        "effective_dz_m": effective_dz_m,
+        "effective_dx_m": effective_dx_m,
+        "velocity_unit": "km/s",
+        "distance_unit": "m",
+        "time_unit": "ms",
+        "orientation": "axis0_depth_axis1_horizontal",
+    }
 
     print(f"[info] target shape={vp_resized.shape}, min={vp_resized.min():.4f}, max={vp_resized.max():.4f}")
-    return vp_resized
+    print("[info] Marmousi metadata:")
+    for key, value in metadata.items():
+        print(f"  - {key}: {value}")
+    return vp_resized, metadata
 
 
 def save_preview(arr: np.ndarray, path: Path, title: str) -> None:
@@ -155,7 +181,7 @@ def save_preview(arr: np.ndarray, path: Path, title: str) -> None:
     plt.close()
 
 
-def save_outputs(vp_true: np.ndarray) -> None:
+def save_outputs(vp_true: np.ndarray, metadata: dict[str, object]) -> None:
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
     vp_init = gaussian_filter(vp_true, sigma=INIT_SMOOTH_SIGMA).astype(np.float32)
@@ -165,11 +191,13 @@ def save_outputs(vp_true: np.ndarray) -> None:
 
     true_npy = PROCESSED_DIR / f"marmousi_vp_true_full_{suffix}.npy"
     init_npy = PROCESSED_DIR / f"marmousi_vp_init_full_{suffix}.npy"
+    metadata_npz = PROCESSED_DIR / f"marmousi_metadata_full_{suffix}.npz"
     true_png = PROCESSED_DIR / f"marmousi_vp_true_full_{suffix}.png"
     init_png = PROCESSED_DIR / f"marmousi_vp_init_full_{suffix}.png"
 
     np.save(true_npy, vp_true)
     np.save(init_npy, vp_init)
+    np.savez(metadata_npz, **metadata)
 
     save_preview(vp_true, true_png, f"Marmousi VP true full extent, {suffix}")
     save_preview(vp_init, init_png, f"Marmousi VP initial full extent, {suffix}")
@@ -177,6 +205,7 @@ def save_outputs(vp_true: np.ndarray) -> None:
     print("[saved]")
     print(f"  - {true_npy}")
     print(f"  - {init_npy}")
+    print(f"  - {metadata_npz}")
     print(f"  - {true_png}")
     print(f"  - {init_png}")
 
@@ -186,8 +215,8 @@ def main() -> None:
     extract_if_needed()
     vp_file = find_vp_file()
     vp = read_segy_as_2d_array(vp_file)
-    vp_true = resize_full_model_preserving_aspect(vp)
-    save_outputs(vp_true)
+    vp_true, metadata = resize_full_model_preserving_aspect(vp)
+    save_outputs(vp_true, metadata)
 
 
 if __name__ == "__main__":

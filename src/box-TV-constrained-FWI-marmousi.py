@@ -104,17 +104,45 @@ def load_marmousi_model() -> VelocityModelDataForOptimization:
     return VelocityModelDataForOptimization(true_velocity_model, initial_velocity_model, box_min_value, box_max_value)
 
 
-def marmousi_configuration(shape: tuple[int, int], n_shots: int, n_receivers: int, noise_sigma: float) -> FWIParams:
+def load_marmousi_metadata(shape: tuple[int, int]) -> dict[str, Union[float, int, str]]:
+    processed_dir = Path("datasets/marmousi/processed")
+    nz, nx = shape
+    candidates = sorted(processed_dir.glob(f"marmousi_metadata_full_{nz}x{nx}.npz"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"Marmousi metadata for shape {shape} was not found. "
+            "Run: MPLCONFIGDIR=/tmp/mpl-marmousi .venv/bin/python scripts/prepare_marmousi.py"
+        )
+
+    metadata_npz = np.load(candidates[-1])
+    metadata = {key: metadata_npz[key].item() if metadata_npz[key].shape == () else metadata_npz[key] for key in metadata_npz.files}
+    print("Marmousi metadata:")
+    for key, value in metadata.items():
+        print(f"  {key}: {value}")
+    if metadata.get("orientation") != "axis0_depth_axis1_horizontal":
+        raise ValueError(f"Unsupported Marmousi orientation: {metadata.get('orientation')}")
+    return metadata
+
+
+def marmousi_configuration(
+    shape: tuple[int, int],
+    n_shots: int,
+    n_receivers: int,
+    noise_sigma: float,
+    effective_dz_m: float,
+    effective_dx_m: float,
+    source_frequency: float = 0.003,
+) -> FWIParams:
     nz, nx = shape
     return FWIParams(
         real_cell_size=Vec2D(nx, nz),
-        cell_meter_size=Vec2D(10.0, 10.0),
+        cell_meter_size=Vec2D(float(effective_dx_m), float(effective_dz_m)),
         damping_cell_thickness=40,
         start_time=0,
         unit_time=1,
         simulation_times=1000,
         source_peek_time=100,
-        source_frequency=0.01,
+        source_frequency=source_frequency,
         n_shots=n_shots,
         n_receivers=min(n_receivers, nx),
         noise_sigma=noise_sigma,
@@ -127,8 +155,12 @@ def fwi_params_to_fast_parallel_velocity_model_gradient_calculator_props(
     shape = (params.real_cell_size.y, params.real_cell_size.x)
     spacing = (params.cell_meter_size.y, params.cell_meter_size.x)
     width = ((params.real_cell_size - Vec2D(1, 1)) * params.cell_meter_size).x
-    source_locations = np.array([[30, x] for x in np.linspace(0, width, num=params.n_shots)])
-    receiver_locations = np.array([[30, x] for x in np.linspace(0, width, num=params.n_receivers)])
+    depth = ((params.real_cell_size - Vec2D(1, 1)) * params.cell_meter_size).y
+    acquisition_depth = min(max(float(params.cell_meter_size.y), 30.0), depth)
+    x_min = 0.05 * width
+    x_max = 0.95 * width
+    source_locations = np.array([[acquisition_depth, x] for x in np.linspace(x_min, x_max, num=params.n_shots)])
+    receiver_locations = np.array([[acquisition_depth, x] for x in np.linspace(x_min, x_max, num=params.n_receivers)])
     return FastParallelVelocityModelGradientCalculatorProps(
         true_velocity_model,
         initial_velocity_model,
@@ -143,6 +175,36 @@ def fwi_params_to_fast_parallel_velocity_model_gradient_calculator_props(
         params.noise_sigma,
         num_parallels,
     )
+
+
+def save_geometry_check(
+    output_path: Path,
+    true_velocity_model: npt.NDArray,
+    params: FWIParams,
+    props: FastParallelVelocityModelGradientCalculatorProps,
+    vmin: float,
+    vmax: float,
+):
+    import matplotlib.pyplot as plt
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    nz, nx = true_velocity_model.shape
+    width = (nx - 1) * params.cell_meter_size.x
+    depth = (nz - 1) * params.cell_meter_size.y
+    extent = [0, width, depth, 0]
+
+    plt.figure(figsize=(14, 4))
+    plt.imshow(true_velocity_model, extent=extent, cmap="coolwarm", aspect="auto", vmin=vmin, vmax=vmax)
+    plt.scatter(props.receiver_locations[:, 1], props.receiver_locations[:, 0], s=12, c="black", marker="v", label="receivers")
+    plt.scatter(props.source_locations[:, 1], props.source_locations[:, 0], s=60, c="yellow", edgecolors="black", marker="*", label="sources")
+    plt.xlabel("x [m]")
+    plt.ylabel("depth [m]")
+    plt.title("Marmousi acquisition geometry")
+    plt.legend()
+    plt.colorbar(label="velocity [km/s]")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close()
 
 
 def save_experiment_results(
@@ -209,6 +271,7 @@ def simulate_fwi(
     result_root_path: Union[Path, None] = Path("results/marmousi"),
     image_name: str = "marmousi",
     random_seed: Union[int, None] = 0,
+    source_frequency: float = 0.003,
 ):
     if algorithm == "gradient":
         gamma2 = None
@@ -216,10 +279,19 @@ def simulate_fwi(
         raise ValueError("gamma2 must be set when algorithm is pds")
 
     true_velocity_model, initial_velocity_model, vmin, vmax = load_marmousi_model()
+    metadata = load_marmousi_metadata(true_velocity_model.shape)
     if random_seed is not None:
         np.random.seed(random_seed)
 
-    params = marmousi_configuration(true_velocity_model.shape, n_shots, n_receivers, noise_sigma)
+    params = marmousi_configuration(
+        true_velocity_model.shape,
+        n_shots,
+        n_receivers,
+        noise_sigma,
+        float(metadata["effective_dz_m"]),
+        float(metadata["effective_dx_m"]),
+        source_frequency=source_frequency,
+    )
     dsize = params.damping_cell_thickness
 
     show_velocity_model(true_velocity_model, vmax=vmax, vmin=vmin, title="marmousi true velocity model", cmap="coolwarm")
@@ -228,6 +300,8 @@ def simulate_fwi(
     print(f"TV of true velocity model: {total_variation_of_true_velocity_model}, alpha: {alpha}, ratio: {alpha / total_variation_of_true_velocity_model}")
 
     props = fwi_params_to_fast_parallel_velocity_model_gradient_calculator_props(params, true_velocity_model, initial_velocity_model)
+    if result_root_path is not None:
+        save_geometry_check(result_root_path.joinpath("geometry_check.png"), true_velocity_model, params, props, vmin, vmax)
     grad_calculator = FastParallelVelocityModelGradientCalculator(props)
     initial_velocity_model_with_damping = grad_calculator.velocity_model.copy()
     observed_seismic_data = grad_calculator.true_observed_waveforms.copy()
@@ -248,7 +322,8 @@ def simulate_fwi(
         while True:
             th += 1
             residual_norm_sum, grad = grad_calculator.calc_grad(v)
-            if np.isnan(residual_norm_sum):
+            if not np.isfinite(residual_norm_sum):
+                print(f"stopped: objective became non-finite at iteration {th + 1}")
                 break
 
             if algorithm == "gradient":
@@ -258,7 +333,7 @@ def simulate_fwi(
                 tmp = grad.copy()
                 tmp[dsize:-dsize, dsize:-dsize] += diff_op.Dt(y)
                 v = v - gamma1 * tmp
-                v[dsize:-dsize, dsize:-dsize] = prox_box_constraint(remove_damping_cells(v, dsize), vmin, vmax)
+                v = prox_box_constraint(v, vmin, vmax)
                 y = y + gamma2 * diff_op.D(2 * remove_damping_cells(v, dsize) - remove_damping_cells(prev_v, dsize))
                 y = y - gamma2 * proj_L12_norm_ball(y / gamma2, alpha)
 
@@ -325,6 +400,7 @@ def simulate_fwi(
                 "simulation_times": params.simulation_times,
                 "source_peek_time": params.source_peek_time,
                 "source_frequency": params.source_frequency,
+                "marmousi_metadata": {key: str(value) for key, value in metadata.items()},
             }
             save_experiment_results(
                 output_dir,
@@ -364,6 +440,7 @@ def run_marmousi_experiments(
     result_root_path: Path = Path("results/marmousi"),
     image_name: str = "marmousi",
     random_seed: Union[int, None] = 0,
+    source_frequency: float = 0.003,
 ):
     true_velocity_model, _, _, _ = load_marmousi_model()
     alpha_gt = isotropic_tv_2d(true_velocity_model)
@@ -384,6 +461,7 @@ def run_marmousi_experiments(
             result_root_path=result_root_path,
             image_name=image_name,
             random_seed=random_seed,
+            source_frequency=source_frequency,
         )
 
     for alpha in alpha_values:
@@ -399,6 +477,7 @@ def run_marmousi_experiments(
             result_root_path=result_root_path,
             image_name=image_name,
             random_seed=random_seed,
+            source_frequency=source_frequency,
         )
 
 
