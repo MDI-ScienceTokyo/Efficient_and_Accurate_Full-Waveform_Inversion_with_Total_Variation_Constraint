@@ -9,6 +9,7 @@ __pycache__
 
 .idea
 .venv
+.poetry-tool
 .poetry-cache
 .poetry-config
 .matplotlib-cache
@@ -19,8 +20,15 @@ __pycache__
 /comparison/Accelerating_FWI_By_Transfer_Learning/.venv/
 /comparison/Accelerating_FWI_By_Transfer_Learning/data/
 /comparison/Accelerating_FWI_By_Transfer_Learning/results/
-/comparison/Accelerating_FWI_By_Transfer_Learning/reports/assets/
+/comparison/Accelerating_FWI_By_Transfer_Learning/reports/assets/*
+!/comparison/Accelerating_FWI_By_Transfer_Learning/reports/assets/tlfwi_unclipped_noise*_models_35_vs_100.png
+!/comparison/Accelerating_FWI_By_Transfer_Learning/reports/assets/tlfwi_unclipped_noise*_rmse_ssim_35_vs_100.png
+/comparison/Accelerating_FWI_By_Transfer_Learning/reports/*.pdf
 /comparison/Accelerating_FWI_By_Transfer_Learning/**/__pycache__/
 /comparison/Accelerating_FWI_By_Transfer_Learning/**/*.pyc
 /comparison/Accelerating_FWI_By_Transfer_Learning/.pytest_cache/
 .pytest_cache/
+
+# Local smoke-test outputs
+/results_env_check/
+/results_poetry_check/

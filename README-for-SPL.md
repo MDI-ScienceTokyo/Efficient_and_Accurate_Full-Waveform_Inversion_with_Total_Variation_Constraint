@@ -76,6 +76,98 @@ MPLCONFIGDIR=.matplotlib-cache poetry run python src/box-TV-constrained-FWI.py
 
 SEG/BP 2004 velocity benchmark data をダウンロードし、切り出し、合成観測データ生成、FWI gradient 1回計算まで確認する手順は [docs/bp2004_gradient.md](docs/bp2004_gradient.md) にまとめています。
 
+## TL-FWI comparison workspace
+
+Transfer Learning FWI比較用コードは次の場所に置いています。
+
+```text
+comparison/Accelerating_FWI_By_Transfer_Learning/
+```
+
+このフォルダは、Zenodoの `Accelerating_FWI_By_Transfer_Learning` コードをベースに、SEG/EAGE Saltモデルを読み込むためのadapter、Efficient and Accurate FWI形式のSalt dataset生成、TL-FWI実行、レポート作成用の補助コードを追加したものです。手法名としては結果フォルダ・README上で `TL-FWI` と表記します。
+
+### TL-FWI環境の復元
+
+clone後、親リポジトリ側の依存関係とSaltデータを準備してから、TL-FWI側の仮想環境を作成します。
+
+```bash
+poetry install
+poetry run inv download-salt-and-overthrust-models
+
+cd comparison/Accelerating_FWI_By_Transfer_Learning
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+GPUが使える環境では `requirements.txt` のCUDA 12.4対応PyTorchを使います。GPUがない、または短い確認だけ行う場合は `scripts/run_salt_fwi.py --cpu` を付けてください。
+
+### TL-FWI用Salt dataset生成
+
+Efficient and Accurate FWIのSalt前処理に合わせたdatasetはGit管理外です。再現時は次のコマンドで再生成します。
+
+```bash
+# [1.5, 4.5] km/s にclipする版
+../../.venv/bin/python scripts/create_efficient_salt_datasets.py \
+  --output-dir data/efficient_salt \
+  --noise-sigmas 0,1 \
+  --clip-velocity
+
+# clipしない版
+../../.venv/bin/python scripts/create_efficient_salt_datasets.py \
+  --output-dir data/efficient_salt_unclipped \
+  --noise-sigmas 0,1
+```
+
+生成される `data/efficient_salt*/salt_efficient_noise_sigma*.npz` には、`true_velocity_model`, `initial_velocity_model`, source/receiver geometry, Efficient/Devito由来の `observed_seismic_data` などが入ります。
+
+### TL-FWI実行コマンド
+
+論文側のpretraining epochとは別に、`scripts/run_salt_fwi.py --epochs` はFWIそのものの反復回数です。今回の35/100 iteration比較は次の設定で実行しました。
+
+```bash
+cd comparison/Accelerating_FWI_By_Transfer_Learning
+source .venv/bin/activate
+
+python scripts/run_salt_fwi.py \
+  --efficient-dataset-dir data/efficient_salt_unclipped \
+  --geometry-mode efficient_reference \
+  --noise-mode efficient_reference \
+  --noise-sigmas 0,1 \
+  --epochs 35 \
+  --time-steps 791 \
+  --lr 0.03 \
+  --cost-scaling 0.1 \
+  --clip-grad 1e-5
+
+python scripts/run_salt_fwi.py \
+  --efficient-dataset-dir data/efficient_salt_unclipped \
+  --geometry-mode efficient_reference \
+  --noise-mode efficient_reference \
+  --noise-sigmas 0,1 \
+  --epochs 100 \
+  --time-steps 791 \
+  --lr 0.03 \
+  --cost-scaling 0.1 \
+  --clip-grad 1e-5
+```
+
+clipped datasetを使う場合は `--efficient-dataset-dir data/efficient_salt` とし、既存のclipped datasetでは `--time-steps 736` を使います。
+
+### TL-FWIのGit管理方針
+
+次回同じ環境を復元するためにGitへ入れる対象は、コード、`requirements.txt`、README、軽量なMarkdown/CSVレポート、レポート本文から参照する小さなPNG図です。次の生成物はGit管理外にします。
+
+- `comparison/Accelerating_FWI_By_Transfer_Learning/.venv/`
+- `comparison/Accelerating_FWI_By_Transfer_Learning/data/`
+- `comparison/Accelerating_FWI_By_Transfer_Learning/results/`
+- `comparison/Accelerating_FWI_By_Transfer_Learning/reports/assets/` のうち、汎用生成画像。ただし `tlfwi_unclipped_noise*_models_35_vs_100.png` と `tlfwi_unclipped_noise*_rmse_ssim_35_vs_100.png` はレポート用に管理対象
+- `comparison/Accelerating_FWI_By_Transfer_Learning/reports/*.pdf`
+- `.poetry-tool/`, `.poetry-cache/`, `.matplotlib-cache/`
+- `results_env_check/`, `results_poetry_check/`
+
+TL-FWI論文PDF本体はGitに入れず、必要ならローカルに再配置します。抽出済みメモ `comparison/Accelerating_FWI_By_Transfer_Learning/reports/tlfwi_paper_extracted.md` は軽量なので、パラメータ決定の記録として管理対象にできます。
+
 ## 出力される結果
 
 実験結果は `results/` 配下に保存されます。各実験ごとに1つのディレクトリが作られます。
